@@ -581,6 +581,7 @@ function App() {
                 onSlideChange={setCurrentSlideIndex}
                 onPlay={handleTogglePlay}
                 isPlaying={isPlaying}
+                onUpdateSlide={handleUpdateSlide}
               />
             </div>
             

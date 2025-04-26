@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { Slide, TextElement } from '../types';
-import { ChevronLeft, ChevronRight, Play, Pause, Maximize2, ZoomIn, ZoomOut } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Play, Pause, Maximize2, ZoomIn, ZoomOut, Edit3, Move } from 'lucide-react';
 
 interface SlidePreviewProps {
   slides: Slide[];
@@ -8,6 +8,7 @@ interface SlidePreviewProps {
   onSlideChange: (index: number) => void;
   onPlay: () => void;
   isPlaying: boolean;
+  onUpdateSlide: (updatedSlide: Slide) => void;
 }
 
 const SlidePreview: React.FC<SlidePreviewProps> = ({ 
@@ -15,22 +16,48 @@ const SlidePreview: React.FC<SlidePreviewProps> = ({
   currentSlideIndex, 
   onSlideChange,
   onPlay,
-  isPlaying
+  isPlaying,
+  onUpdateSlide
 }) => {
   if (slides.length === 0) return null;
   
   const currentSlide = slides[currentSlideIndex];
   const slideRef = useRef<HTMLDivElement>(null);
   const [draggedElementId, setDraggedElementId] = useState<string | null>(null);
+  const [resizingElementId, setResizingElementId] = useState<string | null>(null);
+  const [editingElementId, setEditingElementId] = useState<string | null>(null);
   const [updatedElements, setUpdatedElements] = useState<TextElement[] | undefined>(
     currentSlide.textElements
   );
   const [zoomLevel, setZoomLevel] = useState(100);
+  const [startResizeWidth, setStartResizeWidth] = useState(0);
+  const [startResizeX, setStartResizeX] = useState(0);
+  const editableTextRef = useRef<HTMLDivElement>(null);
   
   // Update local state when slide changes
   useEffect(() => {
     setUpdatedElements(currentSlide.textElements);
+    setEditingElementId(null);
+    setDraggedElementId(null);
+    setResizingElementId(null);
   }, [currentSlide]);
+
+  // Save changes when editing is complete
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (editingElementId && editableTextRef.current && !editableTextRef.current.contains(e.target as Node)) {
+        finishEditing();
+      }
+    };
+
+    if (editingElementId) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [editingElementId]);
   
   const renderBackground = () => {
     switch (currentSlide.background.type) {
@@ -103,6 +130,8 @@ const SlidePreview: React.FC<SlidePreviewProps> = ({
     e.preventDefault(); // Prevent default behavior
     e.stopPropagation(); // Stop event propagation
     
+    if (editingElementId) return;
+    
     setDraggedElementId(id);
     
     // Add event listeners for drag operations
@@ -134,7 +163,7 @@ const SlidePreview: React.FC<SlidePreviewProps> = ({
 
   // Handle mouse up for dragging
   const handleMouseUp = () => {
-    if (!draggedElementId) return;
+    if (!draggedElementId && !resizingElementId) return;
     
     // Create an updated slide with the new element positions
     const updatedSlide = {
@@ -142,16 +171,115 @@ const SlidePreview: React.FC<SlidePreviewProps> = ({
       textElements: updatedElements
     };
     
-    // Update the slide in the slides array
-    const newSlides = [...slides];
-    newSlides[currentSlideIndex] = updatedSlide;
+    // Update the slide
+    onUpdateSlide(updatedSlide);
     
     // Reset drag state
     setDraggedElementId(null);
+    setResizingElementId(null);
     
     // Remove event listeners
     document.removeEventListener('mousemove', handleMouseMove);
     document.removeEventListener('mouseup', handleMouseUp);
+    document.removeEventListener('mousemove', handleResizeMove);
+  };
+
+  // Handle start resizing
+  const handleStartResize = (e: React.MouseEvent, id: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    if (editingElementId) return;
+    
+    const element = updatedElements?.find(el => el.id === id);
+    if (!element) return;
+    
+    setResizingElementId(id);
+    setStartResizeWidth(element.width);
+    setStartResizeX(e.clientX);
+    
+    document.addEventListener('mousemove', handleResizeMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  };
+
+  // Handle resize move
+  const handleResizeMove = (e: MouseEvent) => {
+    if (!resizingElementId || !slideRef.current) return;
+    
+    const element = updatedElements?.find(el => el.id === resizingElementId);
+    if (!element) return;
+    
+    const deltaX = e.clientX - startResizeX;
+    const rect = slideRef.current.getBoundingClientRect();
+    
+    // Convert pixel change to percentage change
+    const percentageDelta = (deltaX / rect.width) * 100;
+    const newWidth = Math.max(10, Math.min(100, startResizeWidth + percentageDelta));
+    
+    setUpdatedElements(prev => 
+      prev?.map(el => 
+        el.id === resizingElementId 
+          ? { ...el, width: newWidth } 
+          : el
+      )
+    );
+  };
+
+  // Handle double click to edit text
+  const handleDoubleClick = (e: React.MouseEvent, id: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    setEditingElementId(id);
+    
+    // Focus the editable element after it's rendered
+    setTimeout(() => {
+      if (editableTextRef.current) {
+        editableTextRef.current.focus();
+        
+        // Place cursor at the end of the text
+        const range = document.createRange();
+        const selection = window.getSelection();
+        range.selectNodeContents(editableTextRef.current);
+        range.collapse(false);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }
+    }, 0);
+  };
+
+  // Handle text content change
+  const handleTextChange = (e: React.FormEvent<HTMLDivElement>) => {
+    if (!editingElementId) return;
+    
+    const newContent = e.currentTarget.innerText;
+    
+    setUpdatedElements(prev => 
+      prev?.map(el => 
+        el.id === editingElementId 
+          ? { ...el, content: newContent } 
+          : el
+      )
+    );
+  };
+
+  // Finish editing and save changes
+  const finishEditing = () => {
+    if (!editingElementId) return;
+    
+    // Update the slide with the new content
+    const updatedSlide = {
+      ...currentSlide,
+      textElements: updatedElements,
+      // Also update the main content for voiceover sync
+      content: updatedElements?.find(el => el.id === editingElementId)?.content || currentSlide.content
+    };
+    
+    // Update the slide
+    onUpdateSlide(updatedSlide);
+    
+    // Reset editing state
+    setEditingElementId(null);
   };
 
   const handleZoomIn = () => {
@@ -239,8 +367,10 @@ const SlidePreview: React.FC<SlidePreviewProps> = ({
           {sortedTextElements.map((element: TextElement) => (
             <div
               key={element.id}
-              className={`absolute cursor-move ${
-                draggedElementId === element.id ? 'ring-2 ring-indigo-500 ring-opacity-80' : ''
+              className={`absolute group ${
+                draggedElementId === element.id || resizingElementId === element.id 
+                  ? 'ring-2 ring-indigo-500 ring-opacity-80' 
+                  : 'hover:ring-2 hover:ring-indigo-500 hover:ring-opacity-50'
               }`}
               style={{
                 left: `${element.position.x}%`,
@@ -254,16 +384,66 @@ const SlidePreview: React.FC<SlidePreviewProps> = ({
                 textAlign: element.textAlign,
                 zIndex: element.zIndex
               }}
-              onMouseDown={(e) => handleMouseDown(e, element.id)}
             >
-              {element.content}
+              {/* Drag handle */}
+              <div 
+                className="absolute -top-6 left-1/2 transform -translate-x-1/2 bg-indigo-600 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity cursor-move"
+                onMouseDown={(e) => handleMouseDown(e, element.id)}
+                title="Drag to move"
+              >
+                <Move size={14} />
+              </div>
+              
+              {/* Resize handle */}
+              <div 
+                className="absolute -right-2 top-1/2 transform -translate-y-1/2 w-4 h-8 bg-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity cursor-ew-resize rounded-r-full"
+                onMouseDown={(e) => handleStartResize(e, element.id)}
+                title="Drag to resize"
+              ></div>
+              
+              {/* Edit button */}
+              <div 
+                className="absolute -top-6 -right-6 bg-indigo-600 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                onClick={(e) => handleDoubleClick(e, element.id)}
+                title="Edit text"
+              >
+                <Edit3 size={14} />
+              </div>
+              
+              {/* Text content - editable or static */}
+              {editingElementId === element.id ? (
+                <div
+                  ref={editableTextRef}
+                  contentEditable
+                  suppressContentEditableWarning
+                  className="outline-none min-h-[1em] px-2 py-1 border border-indigo-500 bg-black bg-opacity-20"
+                  onInput={handleTextChange}
+                  onBlur={finishEditing}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && e.shiftKey === false) {
+                      e.preventDefault();
+                      finishEditing();
+                    }
+                  }}
+                >
+                  {element.content}
+                </div>
+              ) : (
+                <div 
+                  className="cursor-move px-2 py-1"
+                  onMouseDown={(e) => handleMouseDown(e, element.id)}
+                  onDoubleClick={(e) => handleDoubleClick(e, element.id)}
+                >
+                  {element.content}
+                </div>
+              )}
             </div>
           ))}
           
-          {/* Drag instruction overlay - only shown when there are elements but none are being dragged */}
-          {sortedTextElements.length > 0 && !draggedElementId && (
+          {/* Instruction overlay - only shown when there are elements but none are being edited/dragged/resized */}
+          {sortedTextElements.length > 0 && !draggedElementId && !resizingElementId && !editingElementId && (
             <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 bg-black bg-opacity-60 text-white text-xs py-1 px-3 rounded-full pointer-events-none">
-              Click and drag text elements to position them
+              Hover over text to edit, move, or resize
             </div>
           )}
         </div>
